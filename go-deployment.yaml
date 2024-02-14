@@ -1,0 +1,138 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: go-http-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: go-http
+  template:
+    metadata:
+      labels:
+        app: go-http
+    spec:
+      containers:
+      - name: go-http
+        image: localhost:5001/go-http:1.0.1
+        ports:
+        - containerPort: 8080
+        env:
+        - name: GRPC_SERVER_URL
+          value: "go-grpc-service:3002"
+        - name: HTTP_SERVER_IDLE_TIMEOUT
+          value: "60"
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: go-http-service
+spec:
+  selector:
+    app: go-http
+  ports:
+  # Default port used by the image
+  - port: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: go-grpc-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: go-grpc
+  template:
+    metadata:
+      labels:
+        app: go-grpc
+    spec:
+      containers:
+      - name: go-grpc
+        image: localhost:5001/go-grpc:1.0.1
+        ports:
+        - containerPort: 3002
+        env:
+        - name: HTTP_SERVER_IDLE_TIMEOUT
+          value: "60"
+        - name: HTTP_SERVER_READ_TIMEOUT
+          value: "1"
+        - name: HTTP_SERVER_WRITE_TIMEOUT
+          value: "2"
+        - name: HTTP_SERVER_PORT
+          value: "3002"
+        - name: DATABASE_URL
+          value: "postgres://postgres:pgpwd4habr@postgres-service:5432/postgres"
+        - name: DATABASE_LOG_LEVEL
+          value: "warn"
+        - name: DATABASE_MAX_OPEN_CONNECTIONS
+          value: "10"
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: go-grpc-service
+spec:
+  selector:
+    app: go-grpc
+  ports:
+  - name: grpc
+    port: 3002
+    targetPort: 3002
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgress
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: localhost:5001/postgres:latest
+        ports:
+        - containerPort: 5432
+        env:
+        - name:  POSTGRES_DB
+          value: "postgres"
+        - name: POSTGRES_USER
+          value: "postgres"
+        - name: POSTGRES_PASSWORD
+          value: "pgpwd4habr"
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: postgres-service
+spec:
+  selector:
+    app: postgres
+  ports:
+  # Default port used by the image
+  - port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: go-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /api(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: go-http-service
+            port:
+              number: 8080
