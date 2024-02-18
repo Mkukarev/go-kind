@@ -136,3 +136,236 @@ spec:
             name: go-http-service
             port:
               number: 8080
+---
+# apiVersion: v1
+# kind: PersistentVolumeClaim
+# metadata:
+#   name: minio-pvc
+# spec:
+#   accessModes:
+#   - ReadWriteOnce
+#   resources:
+#     requests:
+#       storage: 10Gi
+#   storageClassName: microk8s-hostpath
+# ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  labels:
+    app: minio
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+      - name: minio
+        image: bitnami/minio
+        ports:
+        - containerPort: 9000
+        - containerPort: 9001
+        imagePullPolicy: Always
+        env:
+        # - name: MINIO_BROWSER_REDIRECT_URL
+        #   value: "https://example.com/minio/"
+        - name: MINIO_ROOT_USER
+          value: "admin"
+        - name: MINIO_ROOT_PASSWORD
+          value: "adminadmin"
+        - name: MINIO_DEFAULT_BUCKETS
+          value: "default"
+        # volumeMounts:
+        # - name: minio-storage
+        #   mountPath: "/data"
+      # volumes:
+      # - name: minio-storage
+      #   persistentVolumeClaim:
+      #     claimName: minio-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio-service
+spec:
+  selector:
+    app: minio
+  ports:
+  - name: http
+    port: 9000
+    targetPort: 9000
+  - name: console
+    port: 9001
+    targetPort: 9001
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loki
+  template:
+    metadata:
+      labels:
+        app: loki
+    spec:
+      containers:
+      - name: loki
+        image: docker.io/grafana/loki:2.9.4
+        volumeMounts:
+          - name: loki-config
+            mountPath: /etc/loki/
+        args:
+        - -config.file=/etc/loki/config.yaml
+        ports:
+        - containerPort: 3100
+      volumes:
+      - name: loki-config
+        configMap:
+          name: loki-config-map
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki-service
+spec:
+  selector:
+    app: loki
+  ports:
+    - protocol: TCP
+      port: 3100
+      targetPort: 3100
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-config-map
+data:
+  config.yaml: |
+    auth_enabled: false
+
+    server:
+      http_listen_port: 3100
+
+    
+    # This is a complete configuration to deploy Loki backed by a s3-Comaptible API
+    # like MinIO for storage. Loki components will use memberlist ring to shard and
+    # the index will be shipped to storage via boltdb-shipper.
+
+
+    common:
+      ring:
+        instance_addr: 127.0.0.1
+        kvstore:
+          store: memberlist
+      replication_factor: 1
+      path_prefix: /loki # Update this accordingly, data will be stored here.
+
+    memberlist:
+      join_members:
+      # You can use a headless k8s service for all distributor, ingester and querier components.
+      - loki-gossip-ring.loki.svc.cluster.local:7946 # :7946 is the default memberlist port.
+
+    schema_config:
+      configs:
+      - from: 2020-05-15
+        store: boltdb-shipper
+        object_store: s3
+        schema: v11
+        index:
+          prefix: index_
+          period: 24h
+
+    storage_config:
+      boltdb_shipper:
+        active_index_directory: /loki/index
+        cache_location: /loki/index_cache
+        shared_store: s3
+      aws:
+        s3: http://admin:adminadmin@localhost.:9000/
+        s3forcepathstyle: true
+
+    compactor:
+      working_directory: /loki/compactor
+      shared_store: s3
+      compaction_interval: 5m
+
+---
+    # common:
+    #   path_prefix: /tmp/loki
+    #   storage:
+        
+    #     aws:  # Секция filesystem меняется на s3
+          
+    #       s3: http://admin:adminadmin@minio-service.:9000/default
+    #       s3forcepathstyle: true
+      
+    #   replication_factor: 1
+
+    #   ring:
+    #     kvstore:
+    #       store: memberlist
+---
+    # auth_enabled: false
+
+    # storage_config:
+    #   aws:
+    #     # full example: http://loki:supersecret@localhost.:9000
+    #     s3: http://admin:adminadmin@minio-service:9000
+    #     s3forcepathstyle: true
+    #   boltdb_shipper:
+    #     active_index_directory: /tmp/loki/boltdb-shipper-active
+    #     cache_location: /tmp/loki/boltdb-shipper-cache
+    #     cache_ttl: 24h         # Can be increased for faster performance over longer query periods, uses more disk space
+    #     shared_store: s3
+
+    # schema_config:
+    #   configs:
+    #     - from: 2020-07-01
+    #       store: boltdb-shipper
+    #       object_store: s3
+    #       schema: v11
+    #       index:
+    #         prefix: index_
+    #         period: 24h
+
+    # common:
+    #   path_prefix: /tmp/loki
+---
+    # auth_enabled: false
+
+    # server:
+    #   http_listen_port: 3100
+    
+    # schema_config:
+    #   configs:
+    #     - from: 2021-08-01
+    #       store: tsdb
+    #       object_store: s3
+    #       schema: v12
+    #       index:
+    #         prefix: index_
+    #         period: 24h
+    
+    # common:
+    #   storage:
+    #     s3:
+    #       endpoint: minio:9000
+    #       insecure: true
+    #       access_key_id: admin
+    #       secret_access_key: adminadmin
+    #       s3forcepathstyle: true
+    #       bucketnames: default
+    # compactor:
+    #   retention_enabled: true
+    #   shared_store: s3
