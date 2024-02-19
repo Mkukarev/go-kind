@@ -257,12 +257,6 @@ data:
     server:
       http_listen_port: 3100
 
-    
-    # This is a complete configuration to deploy Loki backed by a s3-Comaptible API
-    # like MinIO for storage. Loki components will use memberlist ring to shard and
-    # the index will be shipped to storage via boltdb-shipper.
-
-
     common:
       ring:
         instance_addr: 127.0.0.1
@@ -274,7 +268,8 @@ data:
     memberlist:
       join_members:
       # You can use a headless k8s service for all distributor, ingester and querier components.
-      - loki-gossip-ring.loki.svc.cluster.local:7946 # :7946 is the default memberlist port.
+      # - loki-service.default.svc.cluster.local:7946 # :7946 is the default memberlist port.
+      - http://localhost:7946
 
     schema_config:
       configs:
@@ -292,80 +287,118 @@ data:
         cache_location: /loki/index_cache
         shared_store: s3
       aws:
-        s3: http://admin:adminadmin@localhost.:9000/
+        s3: http://admin:adminadmin@minio-service.default.svc.cluster.local:9000/default
         s3forcepathstyle: true
 
     compactor:
       working_directory: /loki/compactor
       shared_store: s3
       compaction_interval: 5m
-
 ---
-    # common:
-    #   path_prefix: /tmp/loki
-    #   storage:
-        
-    #     aws:  # Секция filesystem меняется на s3
-          
-    #       s3: http://admin:adminadmin@minio-service.:9000/default
-    #       s3forcepathstyle: true
-      
-    #   replication_factor: 1
-
-    #   ring:
-    #     kvstore:
-    #       store: memberlist
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: grafana
+  name: grafana
+spec:
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+              protocol: TCP
 ---
-    # auth_enabled: false
-
-    # storage_config:
-    #   aws:
-    #     # full example: http://loki:supersecret@localhost.:9000
-    #     s3: http://admin:adminadmin@minio-service:9000
-    #     s3forcepathstyle: true
-    #   boltdb_shipper:
-    #     active_index_directory: /tmp/loki/boltdb-shipper-active
-    #     cache_location: /tmp/loki/boltdb-shipper-cache
-    #     cache_ttl: 24h         # Can be increased for faster performance over longer query periods, uses more disk space
-    #     shared_store: s3
-
-    # schema_config:
-    #   configs:
-    #     - from: 2020-07-01
-    #       store: boltdb-shipper
-    #       object_store: s3
-    #       schema: v11
-    #       index:
-    #         prefix: index_
-    #         period: 24h
-
-    # common:
-    #   path_prefix: /tmp/loki
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana-service
+spec:
+  selector:
+    app: grafana
+  ports:
+    - port: 3200
+      protocol: TCP
+      targetPort: 3000
 ---
-    # auth_enabled: false
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: promtail
+  name: promtail
+spec:
+  selector:
+    matchLabels:
+      app: promtail
+  template:
+    metadata:
+      labels:
+        app: promtail
+    spec:
+      containers:
+        - name: promtail
+          image: grafana/promtail:latest
+          args: 
+          - "-config.file=/etc/promtail/promtail.yaml"
+          ports:
+            - containerPort: 9080
+              protocol: TCP
+          volumeMounts:
+          - name: logs
+            mountPath: /var/log
+          - name: promtail-config
+            mountPath: /etc/promtail/
+      volumes:
+      - name: logs
+        hostPath:
+          path: /var/log
+      - name: promtail-config
+        configMap:
+          name: promtail-config-map
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: promtail-config-map
+data:
+  promtail.yaml: |
+    server:
+      http_listen_port: 9080
+      grpc_listen_port: 0
 
-    # server:
-    #   http_listen_port: 3100
-    
-    # schema_config:
-    #   configs:
-    #     - from: 2021-08-01
-    #       store: tsdb
-    #       object_store: s3
-    #       schema: v12
-    #       index:
-    #         prefix: index_
-    #         period: 24h
-    
-    # common:
-    #   storage:
-    #     s3:
-    #       endpoint: minio:9000
-    #       insecure: true
-    #       access_key_id: admin
-    #       secret_access_key: adminadmin
-    #       s3forcepathstyle: true
-    #       bucketnames: default
-    # compactor:
-    #   retention_enabled: true
-    #   shared_store: s3
+    positions:
+      filename: /tmp/positions.yaml
+
+    clients:
+      - url: http://loki-service.default.svc.cluster.local:3100/loki/api/v1/push
+
+    scrape_configs:
+    - job_name: system
+      static_configs:
+      - targets:
+          - localhost
+        labels:
+          app: go-http
+          __path__: /var/log/containers/go-http-*.log
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: promtail-service
+spec:
+  selector:
+    app: promtail
+  ports:
+    - port: 3300
+      protocol: TCP
+      targetPort: 9080
